@@ -100,7 +100,7 @@ def identify_territories(image, grid_size):
 st.set_page_config(layout="wide")
 st.title("🎯 LinkedIn styleN-QUEENS Solver using recursive backtracking algorithm")
 
-grid_size = st.radio("Select grid size:", [8, 9, 10], index=0)
+grid_size = st.radio("Select grid size:", [7, 8, 9, 10], index=0)
 
 uploaded_file = st.file_uploader("Upload grid image:", type=["png","jpg","jpeg"])
 
