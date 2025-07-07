@@ -1,4 +1,7 @@
 streamlit
+cv2
+matplotlib
+scikit-learn
 opencv-python
 numpy
 Pillow
