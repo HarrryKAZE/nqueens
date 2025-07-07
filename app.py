@@ -1,131 +1,175 @@
 import streamlit as st
 import cv2
 import numpy as np
-from PIL import Image
-from io import BytesIO
+from collections import defaultdict
+from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
 
-# Use your existing functions here: load_and_preprocess(), detect_existing_queens(), etc.
+### QUEEN PLACEMENT SOLVER (STACKED ADJACENT TRACKING) ###
+def solve(territories, grid_size):
+    board = [[0]*grid_size for _ in range(grid_size)]
+    used_rows = set()
+    used_cols = set()
+    global_adjacents = set()
+    adj_stack = []
 
+    def is_valid(row, col):
+        return (
+            row not in used_rows and
+            col not in used_cols and
+            (row, col) not in global_adjacents
+        )
 
+    def mark_adjacent(row, col):
+        return {
+            (row + dr, col + dc)
+            for dr in (-1, 0, 1)
+            for dc in (-1, 0, 1)
+            if 0 <= row + dr < grid_size and 0 <= col + dc < grid_size
+        }
 
-st.title("♛ N-Queens Puzzle Solver (Image Input)")
+    def place_QUEENs(current_territory=0):
+        if current_territory == len(territories):
+            return True
 
-puzzle_img_file = st.file_uploader("Upload Puzzle Image (8x8 board)", type=["png", "jpg", "jpeg"])
-queen_img_file = st.file_uploader("Upload Queen Template Image", type=["png", "jpg", "jpeg"])
+        for row, col in territories[current_territory]:
+            if is_valid(row, col):
+                board[row][col] = 1
+                used_rows.add(row)
+                used_cols.add(col)
+                affected = mark_adjacent(row, col)
+                global_adjacents.update(affected)
+                adj_stack.append(affected)
 
-if puzzle_img_file and queen_img_file:
-    img_bytes = np.asarray(bytearray(puzzle_img_file.read()), dtype=np.uint8)
-    puzzle_img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
+                if place_QUEENs(current_territory + 1):
+                    return True
 
-    queen_bytes = np.asarray(bytearray(queen_img_file.read()), dtype=np.uint8)
-    queen_img = cv2.imdecode(queen_bytes, cv2.IMREAD_UNCHANGED)
+                board[row][col] = 0
+                used_rows.remove(row)
+                used_cols.remove(col)
+                global_adjacents.difference_update(adj_stack.pop())
 
-    # Call your image processing functions here
-    def load_and_preprocess(img):
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 50, 150, apertureSize=3)
+        return False
 
-        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 80, minLineLength=50, maxLineGap=10)
-        pts = []
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            pts.extend([[x1, y1], [x2, y2]])
-        pts = np.array(pts)
+    return board if place_QUEENs() else None
 
-        rect = cv2.minAreaRect(pts)
-        box = cv2.boxPoints(rect).astype(np.int32)
+### TERRITORY DETECTION ###
+def identify_territories(image, grid_size):
+    h, w = image.shape[:2]
+    cell_size = h / grid_size
 
-        def order_points(pts_array):
-            rect_ordered = np.zeros((4, 2), dtype="float32")
-            s = pts_array.sum(axis=1)
-            rect_ordered[0] = pts_array[np.argmin(s)]
-            rect_ordered[2] = pts_array[np.argmax(s)]
-            diff = np.diff(pts_array, axis=1)
-            rect_ordered[1] = pts_array[np.argmin(diff)]
-            rect_ordered[3] = pts_array[np.argmax(diff)]
-            return rect_ordered
+    grid_colors = np.zeros((grid_size, grid_size, 3), dtype=np.uint8)
+    for i in range(grid_size):
+        for j in range(grid_size):
+            y1, y2 = int(i*cell_size + cell_size*0.2), int((i+1)*cell_size - cell_size*0.2)
+            x1, x2 = int(j*cell_size + cell_size*0.2), int((j+1)*cell_size - cell_size*0.2)
+            grid_colors[i,j] = np.median(image[y1:y2, x1:x2], axis=(0,1))
 
-        src = order_points(box)
-        dst = np.array([[0, 0], [799, 0], [799, 799], [0, 799]], dtype="float32")
-        M = cv2.getPerspectiveTransform(src, dst)
-        warp = cv2.warpPerspective(img, M, (800, 800))
-        return warp
-    def detect_existing_queens(board_img, tmpl):
-        if tmpl.shape[2] == 4:
-            gtmpl = cv2.cvtColor(tmpl[:, :, :3], cv2.COLOR_BGR2GRAY)
+    pixels = grid_colors.reshape(-1, 3)
+    kmeans = KMeans(n_clusters=grid_size, random_state=0).fit(pixels)
+    labels = kmeans.labels_.reshape(grid_size, grid_size)
+
+    territories = []
+    visited = np.zeros((grid_size, grid_size), dtype=bool)
+    directions = [(1,0), (-1,0), (0,1), (0,-1)]
+
+    def bfs(i, j, label):
+        queue = [(i, j)]
+        territory = []
+        while queue:
+            x, y = queue.pop(0)
+            if visited[x][y]: continue
+            visited[x][y] = True
+            territory.append([x, y])
+            for dx, dy in directions:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < grid_size and 0 <= ny < grid_size:
+                    if not visited[nx][ny] and labels[nx][ny] == label:
+                        queue.append((nx, ny))
+        return territory
+
+    for i in range(grid_size):
+        for j in range(grid_size):
+            if not visited[i][j]:
+                territory = bfs(i, j, labels[i][j])
+                territories.append(territory)
+
+    return territories
+
+### STREAMLIT UI WITH MANUAL GRID SELECTION ###
+st.set_page_config(layout="wide")
+st.title("🎯 LinkedIn styleN-QUEENS Solver using recursive backtracking algorithm")
+
+grid_size = st.radio("Select grid size:", [8, 9, 10], index=0)
+
+uploaded_file = st.file_uploader("Upload grid image:", type=["png","jpg","jpeg"])
+
+if uploaded_file:
+    image = cv2.imdecode(np.frombuffer(uploaded_file.read(), np.uint8), cv2.IMREAD_COLOR)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    size = max(image.shape[:2])
+    image = cv2.resize(image, (size, size))
+
+    verify_img = image.copy()
+    cell_size = size / grid_size
+    for i in range(1, grid_size):
+        cv2.line(verify_img, (0, int(i*cell_size)), (size, int(i*cell_size)), (255,0,0), 2)
+        cv2.line(verify_img, (int(i*cell_size), 0), (int(i*cell_size), size), (255,0,0), 2)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.image(image, caption="Original Image")
+    with col2:
+        st.image(verify_img, caption=f"{grid_size}x{grid_size} Grid Overlay")
+
+    territories = identify_territories(image, grid_size)
+    st.subheader(f"Detected {len(territories)} territories")
+
+    fig, ax = plt.subplots(figsize=(8,8))
+    ax.imshow(image)
+    colors = plt.cm.get_cmap('tab20', len(territories))
+    for idx, t in enumerate(territories):
+        for i,j in t:
+            rect = plt.Rectangle((j*cell_size, i*cell_size), cell_size, cell_size,
+                               fill=False, edgecolor=colors(idx), linewidth=3)
+            ax.add_patch(rect)
+    st.pyplot(fig)
+
+    for i, territory in enumerate(territories):
+        st.write(f"**Territory {i+1}**: {len(territory)} cells - {territory}")
+
+    if st.button("Solve QUEEN Placement"):
+        solution = solve(territories, grid_size)
+        if solution:
+            st.success("Solution found!")
+            sol_img = image.copy()
+            for i in range(grid_size):
+                for j in range(grid_size):
+                    if solution[i][j]:
+                        center = (int((j+0.5)*cell_size), int((i+0.5)*cell_size))
+                        
+                        cv2.circle(sol_img, center, int(cell_size/4), (0,0,255), -1)
+
+            col3, col4 = st.columns(2)
+            with col3:
+                st.image(sol_img, caption="Solution (Red circles = QUEENs)")
+            with col4:
+                st.subheader("QUEEN Placement Matrix")
+                st.write(np.array(solution))
         else:
-            gtmpl = cv2.cvtColor(tmpl, cv2.COLOR_BGR2GRAY)
-        gtmpl = cv2.resize(gtmpl, (80, 80))
+            st.error("No valid solution found")
 
-        cell = 100
-        placed = set()
-        gray_board = cv2.cvtColor(board_img, cv2.COLOR_BGR2GRAY)
+st.markdown("""
+### How to use:
+1. **Select grid size** (8x8 or 9x9)
+2. **Upload a clear image** of the grid
+3. **Verify grid overlay** matches your image
+4. **Review detected territories**
+5. **Click Solve** to find QUEEN placements
 
-        for r in range(8):
-            for c in range(8):
-                crop = gray_board[r*cell:(r+1)*cell, c*cell:(c+1)*cell]
-                crop = cv2.resize(crop, (80, 80))
-                res = cv2.matchTemplate(crop, gtmpl, cv2.TM_CCOEFF_NORMED)
-                _, maxv, _, _ = cv2.minMaxLoc(res)
-                if maxv > 0.8:
-                    placed.add((r, c))
-        return placed
-    def solve_n_queens(n, fixed_positions):
-        solutions = []
-        cols, diag1, diag2 = set(), set(), set()
-        board = [-1] * n
-
-        for r, c in fixed_positions:
-            board[r] = c
-            cols.add(c)
-            diag1.add(r + c)
-            diag2.add(r - c)
-
-        def backtrack(r):
-            if r == n:
-                solutions.append(board.copy())
-                return True
-            if board[r] != -1:
-                return backtrack(r + 1)
-            for c in range(n):
-                if c in cols or (r + c) in diag1 or (r - c) in diag2:
-                    continue
-                board[r] = c
-                cols.add(c)
-                diag1.add(r + c)
-                diag2.add(r - c)
-                if backtrack(r + 1): return True
-                board[r] = -1
-                cols.remove(c)
-                diag1.remove(r + c)
-                diag2.remove(r - c)
-            return False
-        backtrack(0)
-        return solutions[0] if solutions else []
-    def draw_solution(board_img, solution, queen_img):
-        out = board_img.copy()
-        icon = cv2.resize(queen_img[:, :, :3], (80, 80))
-
-        for r, c in enumerate(solution):
-            x = c * 100 + 10
-            y = r * 100 + 10
-            out[y:y+80, x:x+80] = icon
-
-        return out
-
-
-
-
-    warped = load_and_preprocess(puzzle_img)
-    fixed_queens = detect_existing_queens(warped, queen_img)
-    solution = solve_n_queens(8, fixed_queens)
-    solved_img = draw_solution(warped, solution, queen_img)
-
-    st.image(cv2.cvtColor(solved_img, cv2.COLOR_BGR2RGB), caption="Solved Puzzle", channels="RGB")
-
-    # Optional: Download button
-    img_pil = Image.fromarray(cv2.cvtColor(solved_img, cv2.COLOR_BGR2RGB))
-    buf = BytesIO()
-    img_pil.save(buf, format="PNG")
-    st.download_button("Download Solved Image", data=buf.getvalue(), file_name="solved.png")
+### Tips for best results:
+- Use high-contrast images with clear grid lines
+- Ensure territories have distinct colors
+- Verify territory detection matches your grid
+- For 9x9 grids, ensure exactly 9 territories are detected
+""")
