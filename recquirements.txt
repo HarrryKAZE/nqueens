@@ -1,6 +1,6 @@
 streamlit
 matplotlib
 scikit-learn
-opencv-python
+opencv-python-headless==4.7.0.72
 numpy
 Pillow
